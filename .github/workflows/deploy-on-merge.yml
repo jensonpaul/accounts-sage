@@ -1,0 +1,94 @@
+name: Deploy on PR merge
+on:
+  push:
+    branches:
+      - main
+jobs:
+  deploy-live-environment:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v2
+
+      - name: Set up JDK 11
+        uses: actions/setup-java@v2
+        with:
+          java-version: '11'
+          distribution: 'adopt'
+
+      - name: Get Terraform version
+        id: getterraformversion
+        run: echo "::set-output name=version::$(cat terraform/.terraform-version)"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: ${{ steps.getterraformversion.outputs.version }}
+          terraform_wrapper: false
+          cli_config_credentials_token: ${{ secrets.TF_TOKEN }}
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: ${{ secrets.ACCOUNTS_ACCOUNT_DEPLOYER_ARN }}
+          role-session-name: github-actions-merge-deploy-${{ github.run_id }}-${{ github.run_number }}
+          aws-region: eu-west-2
+
+      - name: Cache SonarCloud packages
+        uses: actions/cache@v1
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+
+      - name: Cache Gradle packages
+        uses: actions/cache@v1
+        with:
+          path: ~/.gradle/caches
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle') }}
+          restore-keys: ${{ runner.os }}-gradle
+
+      - name: Build and analyze
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: ./gradlew clean build sonarqube --info -x test
+
+      - name: Build Zip
+        run: ./gradlew buildZip
+
+      - name: Deploy core Terraform
+        id: core_deploy
+        working-directory: terraform/core
+        env:
+          TF_VAR_terraform_token: ${{ secrets.TF_TOKEN }}
+          TF_VAR_digitalocean_token: ${{ secrets.DO_TOKEN }}
+        run: |
+          terraform init -input=false \
+            -backend-config=live-backend.hcl
+          terraform apply -auto-approve -var-file live.tfvars
+
+          echo "::set-output name=bucket_name::$(terraform output -raw deployment_bucket_name)"
+
+      - name: Copy live ZIP to S3
+        env:
+          DEPLOYMENT_BUCKET: ${{ steps.core_deploy.outputs.bucket_name }}
+        run: |
+          aws s3 cp "build/distributions/accounts.zip" "s3://${DEPLOYMENT_BUCKET}/accounts.zip"
+
+      - name: Deploy live API build to AWS
+        working-directory: terraform/api
+        env:
+          TF_VAR_terraform_token: ${{ secrets.TF_TOKEN }}
+          TF_VAR_epos_api_key: ${{ secrets.EPOS_API_KEY }}
+          TF_VAR_epos_api_secret: ${{ secrets.EPOS_API_SECRET }}
+          TF_VAR_sage_api_client_id: ${{ secrets.SAGE_API_CLIENT_ID }}
+          TF_VAR_sage_api_client_secret: ${{ secrets.SAGE_API_CLIENT_SECRET }}
+          TF_VAR_digitalocean_token: ${{ secrets.DO_TOKEN }}
+        run: |
+          terraform init -input=false \
+            -backend-config=live-backend.hcl
+          terraform apply -auto-approve -var-file live-mappings.tfvars
