@@ -60,7 +60,7 @@ dependencies {
     implementation "com.amazonaws:aws-lambda-java-core:1.2.1",
             "software.amazon.awssdk:lambda:2.17.191",
             "com.amazonaws:aws-lambda-java-events:3.11.0",
-            'com.amazonaws:aws-java-sdk-dynamodb:1.12.220',
+            'com.amazonaws:aws-java-sdk-dynamodb:1.12.499',
             'software.amazon.awssdk:sqs:2.17.191'
 
     runtimeOnly 'org.apache.logging.log4j:log4j-slf4j18-impl:2.17.2'
